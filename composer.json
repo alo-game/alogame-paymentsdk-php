@@ -1,0 +1,35 @@
+{
+    "name": "alo-game/paymentsdk",
+    "description": "Server-side SDK for game backends integrating with Alogame payment flows. Handles signature verification, timestamp freshness, and request/response envelopes so a partner only implements a handful of business hooks. Ships the WebPay contract today (Iap is planned).",
+    "type": "library",
+    "license": "MIT",
+    "homepage": "https://docs.alogame.vn/server-integration/webpay-sdk-php",
+    "keywords": ["alogame", "webpay", "iap", "payment", "webhook", "sdk"],
+    "support": {
+        "issues": "https://github.com/alo-game/alogame-paymentsdk-php/issues",
+        "docs": "https://docs.alogame.vn/server-integration/webpay-sdk-php"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Alogame\\PaymentSdk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Alogame\\PaymentSdk\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "stan": "phpstan analyse"
+    },
+    "minimum-stability": "stable"
+}
