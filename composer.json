@@ -1,6 +1,6 @@
 {
     "name": "alo-game/paymentsdk",
-    "description": "Server-side SDK for game backends integrating with Alogame payment flows. Handles signature verification, timestamp freshness, and request/response envelopes so a partner only implements a handful of business hooks. Ships the WebPay contract today (Iap is planned).",
+    "description": "Server-side SDK for game backends integrating with Alogame payment flows. Handles signature verification, timestamp freshness, and request/response envelopes so a partner only implements a handful of business hooks. Ships WebPay (co-pub, HMAC) and Expub (exclusive/direct-publishing, MD5, covers web top-up and Mobile IAP).",
     "type": "library",
     "license": "MIT",
     "homepage": "https://docs.alogame.vn/server-integration/webpay-sdk-php",

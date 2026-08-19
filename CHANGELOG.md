@@ -6,6 +6,24 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-19
+
+### Added
+
+- `Alogame\PaymentSdk\Expub\*` — a new, independent module implementing the
+  older MD5 4-API contract used by exclusive/direct-publishing (expub)
+  games (`Signature` header, errors via HTTP status, timestamp in seconds).
+  Covers both an expub game's web top-up flow (`ExpubHandler::handleGetUserList`/
+  `handleCheckUid`/`handleCreateOrder`/`handlePaymentReceived`) and its
+  Mobile IAP purchases, which share `createOrder_url`/`exchange_url` with
+  the web flow. Signature scheme verified against `backend-api`'s real
+  `md5_timestamp` strategy (`signatures/md5Timestamp.js`), not a doc.
+- `ExpubHookInterface`, `Md5SignatureVerifier` — the expub-side counterparts
+  to `WebpayHookInterface`/`HmacSignatureVerifier`.
+- `examples/SampleExpubHooks.php` + `examples/expub-quickstart.php` — an
+  in-memory, end-to-end smoke test for the new module, mirroring the
+  existing WebPay quickstart.
+
 ## [1.0.0] - 2026-08-18
 
 Package `alo-game/paymentsdk` — named for the payment SDK as a whole, not

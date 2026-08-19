@@ -1,12 +1,20 @@
 # Alogame Payment SDK (PHP)
 
 Server-side SDK for a game backend integrating with Alogame's payment
-flows. Ships the **WebPay** contract today (`Alogame\PaymentSdk\WebPay`) —
-Iap is planned as a second module in this same package, see
-[Roadmap](#roadmap). It handles signature verification, timestamp
-freshness, JSON parsing, and the exact response envelope Alogame API
-expects — a game backend only implements a handful of business hooks and
-never touches raw HTTP, signing, or field names.
+flows. Ships two independent modules today:
+
+- **`Alogame\PaymentSdk\WebPay`** — the HMAC-SHA256 contract for
+  co-publishing (co-pub) games. See [Usage](#usage).
+- **`Alogame\PaymentSdk\Expub`** — the MD5 contract for exclusive/direct-
+  publishing (expub) games, covering both web top-up **and** Mobile IAP
+  (they share `createOrder_url`/`exchange_url`). See [Expub](#expub-exclusivedirect-publishing-games).
+
+Pick the module matching your game's publishing model — the two are not
+interchangeable and not versions of each other; see each module's own
+section for which applies to you. Either way the SDK handles signature
+verification, timestamp freshness, JSON parsing, and the exact response
+shape Alogame expects — a game backend only implements a handful of
+business hooks and never touches raw HTTP, signing, or field names.
 
 ## Why this exists
 
@@ -27,9 +35,11 @@ lives in code, not in a doc a human re-implements by hand.
 
 ## Setup steps (what you, the game dev, actually do)
 
-1. **Get your credentials from Alogame** — `game_code` and a shared HMAC
-   `secret_key`, plus which environment (dev/staging vs prod) will call you
-   first. You don't generate these; Alogame issues them.
+1. **Get your credentials from Alogame** — a shared HMAC `secret_key` (the
+   only credential `WebpayHandler` actually takes; `game_code` never appears
+   on the wire or in this SDK's API, so there's nothing to get for it), plus
+   which environment (dev/staging vs prod) will call you first. You don't
+   generate the secret; Alogame issues it.
 2. **Install the SDK** — `composer require alo-game/paymentsdk`.
 3. **Implement `WebpayHookInterface`** — write `onCheckUid`,
    `onCreateOrder`, `onPaymentReceived` against your own player/order data.
@@ -214,6 +224,111 @@ Response on success: `{"errcode":0,"msg":"ok","sdk_version":"1.0.0"}` — the
 version lets Alogame support tell which contract version you're running
 without asking you to paste your `composer.lock`.
 
+## Expub (Exclusive/Direct-Publishing games)
+
+For **expub games only** — co-pub games use `WebPay` above instead. This is
+the older of the two contracts (MD5, `Signature` header, errors reported via
+HTTP status rather than an `errcode` field), matching the algorithm every
+expub/legacy game provider already signs with on Alogame's side
+(`backend-api`'s `md5_timestamp` strategy). It covers **both** an expub
+game's web top-up flow and its Mobile IAP purchases — the two channels share
+`createOrder_url`/`exchange_url` entirely.
+
+Implement the one interface:
+
+```php
+use Alogame\PaymentSdk\Expub\Contracts\ExpubHookInterface;
+use Alogame\PaymentSdk\Expub\Dto\{
+    GetUserListRequest, UserCharacter,
+    CheckUidRequest, CheckUidResult,
+    CreateOrderRequest, CreateOrderResult,
+    PaymentReceivedRequest, PaymentReceivedResult,
+};
+
+final class MyExpubGameHooks implements ExpubHookInterface
+{
+    public function onGetUserList(GetUserListRequest $request): array
+    {
+        // Every character linked to this Alogame account — the player
+        // picks one on Alogame's side before topping up. Empty is valid
+        // (account linked, no characters yet).
+        return MyCharacterRepository::findAllByAlogameUserId($request->userId);
+    }
+
+    public function onCheckUid(CheckUidRequest $request): CheckUidResult
+    {
+        $character = MyCharacterRepository::findByUid($request->uid);
+
+        return $character
+            ? CheckUidResult::found($character->name, $character->server)
+            : CheckUidResult::notFound();
+    }
+
+    public function onCreateOrder(CreateOrderRequest $request): CreateOrderResult
+    {
+        // $request->osId is "ios"/"android" for a Mobile IAP purchase, null
+        // for a web top-up — same method, branch on it if delivery differs.
+        $existing = MyOrderRepository::findByAlogameOrderId($request->orderId);
+        if ($existing !== null) {
+            // Alogame retried — return the SAME order_code, never a new one.
+            return CreateOrderResult::duplicate($existing->orderCode);
+        }
+
+        $order = MyOrderRepository::create(
+            alogameOrderId: $request->orderId,
+            uid: $request->uid,
+            productId: $request->productId,
+        );
+
+        return CreateOrderResult::created($order->id);
+    }
+
+    public function onPaymentReceived(PaymentReceivedRequest $request): PaymentReceivedResult
+    {
+        $order = MyOrderRepository::findByOwnId($request->orderCode);
+        if ($order === null) {
+            return PaymentReceivedResult::orderCodeNotFound();
+        }
+
+        MyInventory::deliver($order->uid, $order->productId);
+
+        return PaymentReceivedResult::ok();
+    }
+}
+```
+
+Wire four routes to it — same reasoning as `WebPay` above (this SDK is
+framework-agnostic, so dispatching the right URL to the right method is the
+one piece of plumbing left to you):
+
+```php
+use Alogame\PaymentSdk\Expub\ExpubHandler;
+
+$handler = new ExpubHandler(
+    secret: getenv('ALOGAME_EXPUB_SECRET'),
+    hooks: new MyExpubGameHooks(),
+    onError: fn (\Throwable $e) => MyLogger::error($e),
+);
+
+$response = match (true) {
+    $_SERVER['REQUEST_URI'] === '/expub/get-user-list'    => $handler->handleGetUserList(getallheaders(), file_get_contents('php://input')),
+    $_SERVER['REQUEST_URI'] === '/expub/check-uid'        => $handler->handleCheckUid(getallheaders(), file_get_contents('php://input')),
+    $_SERVER['REQUEST_URI'] === '/expub/create-order'     => $handler->handleCreateOrder(getallheaders(), file_get_contents('php://input')),
+    $_SERVER['REQUEST_URI'] === '/expub/payment-received' => $handler->handlePaymentReceived(getallheaders(), file_get_contents('php://input')),
+};
+
+http_response_code($response->status);
+header('Content-Type: application/json');
+echo json_encode($response->body);
+```
+
+There is no health-check route for this contract (unlike `WebPay`) — Alogame
+doesn't call one for expub games today.
+
+See `examples/SampleExpubHooks.php` and `examples/expub-quickstart.php` for
+a runnable, in-memory version of all four calls, including the retry/
+duplicate-order_id and Mobile-IAP-vs-web-top-up cases.
+
 ## Development
 
 ```bash
@@ -230,7 +345,8 @@ mirror, same pattern and same script style as `alogame-kyc-sdk`'s
 machine, not a CI job — nothing reaches the public mirror without someone
 actually running it.
 
-1. Bump `WebpayHandler::VERSION`, add a matching entry to `CHANGELOG.md`.
+1. Bump `WebpayHandler::VERSION`/`ExpubHandler::VERSION` (whichever module
+   changed), add a matching entry to `CHANGELOG.md`.
 2. Merge to `main` via MR (CI's `test` job — phpunit + phpstan — must pass).
 3. `./scripts/deploy_github.sh` — re-runs tests/phpstan locally, then
    copies the released file set, commits, tags, and pushes to
@@ -249,30 +365,35 @@ repo access list also covers `alogame-paymentsdk-php` (or is org-wide).
 
 ## Roadmap
 
-**Iap module — not started.** Mobile IAP (`createOrder_url`/`exchange_url`)
-currently lives entirely in `backend-api` (`GenericSignatureGameAdapter` +
-`signatures/md5Timestamp.js`), completely separate from this SDK's
-`WebPay` module — different signing (MD5, not HMAC), different field names
-(`order_id`/`productId`/`price` vs `plat_order_num`/`productid`/`amount`),
-different success signal (a body field, not an HTTP status, despite what
-`docs/server-integration/mobile-iap.md` currently says).
+**Expub's own Mobile IAP is already covered** — see [Expub](#expub-exclusivedirect-publishing-games)
+above; `Expub\ExpubHandler::handleCreateOrder`/`handlePaymentReceived` serve
+both an expub game's web top-up and its IAP purchases today, both MD5.
+
+**Still not built: unifying co-pub's Mobile IAP onto `WebPay`'s HMAC
+contract.** Mobile IAP for a *co-pub* game currently lives entirely in
+`backend-api` (`GenericSignatureGameAdapter` + `signatures/md5Timestamp.js`)
+— same MD5 algorithm as `Expub` above, but different field names
+(`order_id`/`productId`/`price` vs `WebPay`'s `plat_order_num`/`productid`/`amount`),
+and a different success signal (a body field, not `errcode`).
 
 Plan, agreed but **not yet built**:
 
 - Add a new opt-in HMAC strategy to `backend-api`'s `GenericSignatureGameAdapter`
   (alongside the existing `md5_timestamp`/`md5_timestamp_ms`, per-game
-  config — existing IAP games keep MD5 unchanged, only a game explicitly
-  switched over uses the new one). Today only **og-030** runs Mobile IAP
-  at all, so the blast radius of getting this wrong is one game, not many.
-- That new strategy sends the **same field names WebPay already uses**
+  config — existing co-pub IAP games keep MD5 unchanged, only a game
+  explicitly switched over uses the new one). Very few co-pub games run
+  Mobile IAP at all today, so the blast radius of getting this wrong is
+  small.
+- That new strategy sends the **same field names `WebPay` already uses**
   (`plat_order_num`, `productid`, `amount`, ...) plus one new optional
   field, `channel` (`ios`/`android` for IAP, absent or `web` for WebPay) —
   so a single `onCreateOrder` hook can serve both flows by branching on
   `$request->channel`, instead of needing two separate handlers.
-- Only after that ships in `backend-api` does an `Iap` module get added
-  here — implementing it against the doc instead of the real
+- Only after that ships in `backend-api` does this get folded into `WebPay`
+  here — implementing it against a doc instead of the real
   `md5Timestamp.js` algorithm would repeat the exact mismatch this SDK
-  exists to prevent (see `docs/og029-webpay-standard-migration.md`).
+  exists to prevent (see `docs/og029-webpay-standard-migration.md` in
+  api-game).
 
 ## See also
 
