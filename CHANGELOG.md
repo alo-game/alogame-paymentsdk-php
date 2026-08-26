@@ -6,6 +6,35 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-24
+
+### Changed (BREAKING)
+
+- **`Expub\Contracts\ExpubHookInterface::onCheckUid()` removed** — moved to
+  a new, optional `Expub\Contracts\CheckUidHookInterface`. Root cause: an
+  expub player always reaches checkout by logging into Alogame and picking
+  a character from `onGetUserList`'s own response, so uid existence is
+  already proven by construction — Alogame's real checkout flow (portal
+  top-up and in-game SDK top-up alike) never calls check-uid for an expub
+  game. `ExpubHookInterface`'s own docblock previously claimed "all four
+  calls are ALWAYS initiated by Alogame," which was never true for this one.
+  Verified against `api-game`'s actual dispatcher (`order.service.js`,
+  `game.service.js`) and `nap.alogame.vn`'s frontend (`portal-alo`) before
+  making this change — neither ever calls it for an expub game.
+- **Migration for existing integrators:** if your hooks class already
+  implements `onCheckUid()` (some partners' backends had a check-uid
+  endpoint before this SDK, e.g. oe-007's `?ac=check_uid`), add
+  `implements CheckUidHookInterface` to that same class — the method body
+  doesn't change. Without it, `ExpubHandler::handleCheckUid()` now answers
+  `404 NOT_CONFIGURED` instead of calling your (still-present) method; this
+  is the one silent-breakage risk of this release, so it's a major bump
+  despite the interface getting smaller, not bigger.
+- Games with no reason to have a check-uid endpoint can simply not
+  implement `CheckUidHookInterface` — nothing to migrate.
+- Mirrors the existing `WebPay\Contracts\ServerListHookInterface` pattern
+  (optional hook, `instanceof` gate in the handler, 404 `NOT_CONFIGURED`
+  when absent) rather than inventing a new one.
+
 ## [1.1.0] - 2026-08-19
 
 ### Added

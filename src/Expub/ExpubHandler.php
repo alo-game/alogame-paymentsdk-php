@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Alogame\PaymentSdk\Expub;
 
+use Alogame\PaymentSdk\Expub\Contracts\CheckUidHookInterface;
 use Alogame\PaymentSdk\Expub\Contracts\ExpubHookInterface;
 use Alogame\PaymentSdk\Expub\Dto\CheckUidRequest;
 use Alogame\PaymentSdk\Expub\Dto\CreateOrderRequest;
@@ -16,12 +17,13 @@ use Alogame\PaymentSdk\Http\Response;
 use Alogame\PaymentSdk\Expub\Signature\Md5SignatureVerifier;
 
 /**
- * The one class an expub game backend wires into its own router — four
- * routes, four calls to the four methods below, four hook implementations.
- * Everything else (signature, timestamp freshness, JSON parsing, the exact
- * response shape/HTTP status per outcome) lives here, the same reasoning as
- * WebpayHandler: a hand-written endpoint has no way to know it got a wire
- * field name or a status code wrong until a real player's order fails.
+ * The one class an expub game backend wires into its own router — three
+ * routes, three calls to the three methods below, three hook
+ * implementations. Everything else (signature, timestamp freshness, JSON
+ * parsing, the exact response shape/HTTP status per outcome) lives here,
+ * the same reasoning as WebpayHandler: a hand-written endpoint has no way
+ * to know it got a wire field name or a status code wrong until a real
+ * player's order fails.
  *
  * This implements the OLDER of the two contracts this SDK ships — MD5,
  * `Signature` header, errors via HTTP status — used by exclusive/direct-
@@ -31,6 +33,11 @@ use Alogame\PaymentSdk\Expub\Signature\Md5SignatureVerifier;
  * onCreateOrder/onPaymentReceived also serve this same game's Mobile IAP
  * purchases — `createOrder_url`/`exchange_url` are shared, distinguished
  * only by CreateOrderRequest::$osId.
+ *
+ * `handleCheckUid` answers 404 NOT_CONFIGURED unless $hooks additionally
+ * implements the OPTIONAL CheckUidHookInterface — see that interface's own
+ * docblock for why this isn't one of the three required hooks. (Moved out
+ * of the required interface in 2.0.0; see CHANGELOG.)
  *
  * Wire field names below are Alogame API's own defaults
  * (backend-api's GenericSignatureGameAdapter.js) verbatim — never rename
@@ -92,11 +99,23 @@ final class ExpubHandler
     }
 
     /**
+     * Only meaningful for a game that implements CheckUidHookInterface —
+     * every other game answers 404 here, which is the correct response:
+     * Alogame never calls this for an expub game's own checkout flow, and
+     * this endpoint exists only for partners whose backend already has one
+     * for other reasons.
+     *
      * @param array<string, string> $headers
      */
     public function handleCheckUid(array $headers, string $rawBody): Response
     {
         return $this->dispatch($headers, $rawBody, function (array $payload): Response {
+            if (!$this->hooks instanceof CheckUidHookInterface) {
+                return new Response(404, [
+                    'error' => ['code' => 'NOT_CONFIGURED', 'message' => 'This game has no check-uid endpoint.'],
+                ]);
+            }
+
             $request = new CheckUidRequest(
                 uid: self::requireString($payload, 'uid'),
                 extInfo: self::optionalString($payload, 'ext_info'),
