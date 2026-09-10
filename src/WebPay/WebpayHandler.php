@@ -44,7 +44,7 @@ final class WebpayHandler
      * support can tell which contract version a partner is actually
      * running without asking them to check composer.lock.
      */
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.1.0';
 
     private readonly HmacSignatureVerifier $verifier;
 

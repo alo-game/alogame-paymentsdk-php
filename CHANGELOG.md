@@ -6,6 +6,8 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-10
+
 ### Added
 
 - `WebPay\Contracts\CharacterListHookInterface` +
@@ -24,6 +26,19 @@ All notable changes to this package are documented here. Format follows
   arriving on the same `onCreateOrder` call as `$serverId`. `null` for
   every game without `CharacterListHookInterface`, so existing
   integrations are unaffected.
+
+### Changed
+
+- `WebpayHandler::VERSION` 1.0.0 -> 1.1.0 — the WebPay wire contract gained
+  an endpoint (additive). `handleHealthCheck()` reports it, so support can
+  tell whether a partner's deployment supports the character list.
+- `scripts/deploy_github.sh` computes the next version by bumping the last
+  released one (level inferred from these notes, overridable with
+  `--major`/`--minor`/`--patch`) instead of defaulting to the version
+  already at the top of this file, asks for confirmation before pushing,
+  and refuses to rewrite an already-published tag unless `--retag` is
+  passed. The old default re-released the current version and force-pushed
+  over its tag, which overwrote the published 2.0.0 on 2026-09-10.
 
 ## [2.0.0] - 2026-08-24
 
