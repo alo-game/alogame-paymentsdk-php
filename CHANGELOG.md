@@ -6,6 +6,25 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `WebPay\Contracts\CharacterListHookInterface` +
+  `WebpayHandler::handleGetCharacterList()` — an optional picker for games
+  where **one uid owns several characters**, so the player says which one
+  receives the top-up. Mirrors the existing `ServerListHookInterface`
+  pattern exactly (opt in by implementing the interface; a game that
+  doesn't answers `404 NOT_CONFIGURED` automatically) and is orthogonal to
+  it: implement either, both, or neither. Unlike the server list, the
+  request carries the `uid` Alogame has already validated through
+  `onCheckUid`, so it is scoped to that uid (plus `serverId`, when the game
+  also has servers) — never to an account. Returning `[]` is a legitimate
+  answer, not an error.
+- `WebPay\Dto\GetCharacterListRequest` and `WebPay\Dto\CharacterInfo`.
+- `WebPay\Dto\CreateOrderRequest::$characterId` — the picked character,
+  arriving on the same `onCreateOrder` call as `$serverId`. `null` for
+  every game without `CharacterListHookInterface`, so existing
+  integrations are unaffected.
+
 ## [2.0.0] - 2026-08-24
 
 ### Changed (BREAKING)

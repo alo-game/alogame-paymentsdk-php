@@ -20,6 +20,10 @@ final class CreateOrderRequest
         public readonly bool $sandbox,
         public readonly ?string $serverId = null,
         public readonly ?string $gameId = null,
+        // Present only for a game implementing CharacterListHookInterface:
+        // the characterId the player picked. When it is set, deliver to THAT
+        // character rather than to whatever $uid alone resolves to.
+        public readonly ?string $characterId = null,
     ) {
     }
 }

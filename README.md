@@ -207,9 +207,45 @@ Wire a fourth route to `WebpayHandler::handleGetServerList()`. A game that
 doesn't implement this interface answers 404 there automatically — you
 don't need an `if` for it.
 
+## Optional: several characters per UID
+
+Only implement this if **one uid of yours can own more than one character**
+and the player must pick which one receives the top-up. Independent of the
+server list above — implement either, both, or neither. Alogame derives
+"does this game need a character picker" from whether your hooks object
+implements this interface:
+
+```php
+use Alogame\PaymentSdk\WebPay\Contracts\CharacterListHookInterface;
+use Alogame\PaymentSdk\WebPay\Dto\{CharacterInfo, GetCharacterListRequest};
+
+final class MyGameHooks implements WebpayHookInterface, CharacterListHookInterface
+{
+    // ...onCheckUid/onCreateOrder/onPaymentReceived as above...
+
+    public function onGetCharacterList(GetCharacterListRequest $request): array
+    {
+        return array_map(
+            static fn ($character) => new CharacterInfo($character->id, $character->name),
+            MyCharacterRepository::forUid($request->uid, $request->serverId),
+        );
+    }
+}
+```
+
+Called only after `onCheckUid` has already accepted the uid, so there is no
+not-found case to signal — returning `[]` just means "this uid owns no
+character" and shows an empty picker rather than an error.
+
+Wire a route to `WebpayHandler::handleGetCharacterList()`. The picked value
+then arrives on the **same** `onCreateOrder` call as everything else, as
+`$request->characterId` — deliver to that character rather than to whatever
+the uid alone resolves to. It is `null` for every game without this
+interface, so an existing integration sees no change.
+
 ## Health check — "is my SDK actually listening?"
 
-Wire a fifth route to `WebpayHandler::handleHealthCheck()`. Alogame calls
+Wire the last route to `WebpayHandler::handleHealthCheck()`. Alogame calls
 it the same way as every other request (signed, `x-timestamp`/`x-signature`
 headers) — a 200 back proves two things at once: your endpoint is
 reachable, *and* the secret Console has on file for you still matches what

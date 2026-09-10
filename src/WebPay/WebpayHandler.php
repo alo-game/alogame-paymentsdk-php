@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Alogame\PaymentSdk\WebPay;
 
+use Alogame\PaymentSdk\WebPay\Contracts\CharacterListHookInterface;
 use Alogame\PaymentSdk\WebPay\Contracts\ServerListHookInterface;
 use Alogame\PaymentSdk\WebPay\Contracts\WebpayHookInterface;
+use Alogame\PaymentSdk\WebPay\Dto\CharacterInfo;
 use Alogame\PaymentSdk\WebPay\Dto\CheckUidRequest;
 use Alogame\PaymentSdk\WebPay\Dto\CreateOrderRequest;
+use Alogame\PaymentSdk\WebPay\Dto\GetCharacterListRequest;
 use Alogame\PaymentSdk\WebPay\Dto\GetServerListRequest;
 use Alogame\PaymentSdk\WebPay\Dto\PaymentReceivedRequest;
 use Alogame\PaymentSdk\WebPay\Dto\ServerInfo;
@@ -111,6 +114,7 @@ final class WebpayHandler
                 sandbox: (bool) ($payload['sandbox'] ?? false),
                 serverId: self::optionalString($payload, 'server_id'),
                 gameId: self::optionalString($payload, 'game_id'),
+                characterId: self::optionalString($payload, 'character_id'),
             );
 
             $result = $this->hooks->onCreateOrder($request);
@@ -180,7 +184,42 @@ final class WebpayHandler
     }
 
     /**
-     * A fourth route with no business hook behind it — wire it once and
+     * Same shape as handleGetServerList, one level down: only meaningful
+     * for a game that implements CharacterListHookInterface, and every
+     * other game answers 404 here because Alogame never calls it unless
+     * Console's config says this game has a character list.
+     *
+     * @param array<string, string> $headers
+     */
+    public function handleGetCharacterList(array $headers, string $rawBody): Response
+    {
+        return $this->dispatch($headers, $rawBody, function (array $payload): Response {
+            if (!$this->hooks instanceof CharacterListHookInterface) {
+                return new Response(404, [
+                    'error' => ['code' => 'NOT_CONFIGURED', 'message' => 'This game has no character list.'],
+                ]);
+            }
+
+            $request = new GetCharacterListRequest(
+                uid: self::requireString($payload, 'uid'),
+                serverId: self::optionalString($payload, 'server_id'),
+                gameId: self::optionalString($payload, 'game_id'),
+            );
+
+            $characters = $this->hooks->onGetCharacterList($request);
+
+            return new Response(200, [
+                'errcode' => 0,
+                'data' => array_map(
+                    static fn (CharacterInfo $character): array => ['characterId' => $character->characterId, 'name' => $character->name],
+                    $characters,
+                ),
+            ]);
+        });
+    }
+
+    /**
+     * A fifth route with no business hook behind it — wire it once and
      * never touch it again. Alogame calls this (signed, same as every
      * other call) to confirm two things at once: your endpoint is
      * reachable, AND the secret Console has on file for you still matches
