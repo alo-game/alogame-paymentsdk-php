@@ -6,17 +6,14 @@ namespace Alogame\PaymentSdk\WebPay;
 
 use Alogame\PaymentSdk\WebPay\Contracts\CharacterListHookInterface;
 use Alogame\PaymentSdk\WebPay\Contracts\ServerListHookInterface;
-use Alogame\PaymentSdk\WebPay\Contracts\UserListHookInterface;
 use Alogame\PaymentSdk\WebPay\Contracts\WebpayHookInterface;
 use Alogame\PaymentSdk\WebPay\Dto\CharacterInfo;
 use Alogame\PaymentSdk\WebPay\Dto\CheckUidRequest;
 use Alogame\PaymentSdk\WebPay\Dto\CreateOrderRequest;
 use Alogame\PaymentSdk\WebPay\Dto\GetCharacterListRequest;
 use Alogame\PaymentSdk\WebPay\Dto\GetServerListRequest;
-use Alogame\PaymentSdk\WebPay\Dto\GetUserListRequest;
 use Alogame\PaymentSdk\WebPay\Dto\PaymentReceivedRequest;
 use Alogame\PaymentSdk\WebPay\Dto\ServerInfo;
-use Alogame\PaymentSdk\WebPay\Dto\UserCharacter;
 use Alogame\PaymentSdk\Exceptions\InvalidPayloadException;
 use Alogame\PaymentSdk\Exceptions\InvalidSignatureException;
 use Alogame\PaymentSdk\Http\Response;
@@ -47,7 +44,7 @@ final class WebpayHandler
      * support can tell which contract version a partner is actually
      * running without asking them to check composer.lock.
      */
-    public const VERSION = '1.2.0';
+    public const VERSION = '1.1.0';
 
     private readonly HmacSignatureVerifier $verifier;
 
@@ -222,45 +219,7 @@ final class WebpayHandler
     }
 
     /**
-     * Same opt-in shape as handleGetServerList: only meaningful for a game
-     * that implements UserListHookInterface, 404 for every other game.
-     * Verified exactly like every other route here (x-timestamp header in
-     * milliseconds), so a game already serving IAP/webpay through this
-     * class needs no second secret or signing scheme for it.
-     *
-     * @param array<string, string> $headers
-     */
-    public function handleGetUserList(array $headers, string $rawBody): Response
-    {
-        return $this->dispatch($headers, $rawBody, function (array $payload): Response {
-            if (!$this->hooks instanceof UserListHookInterface) {
-                return new Response(404, [
-                    'error' => ['code' => 'NOT_CONFIGURED', 'message' => 'This game has no user list.'],
-                ]);
-            }
-
-            $request = new GetUserListRequest(
-                userId: self::requireString($payload, 'userId'),
-            );
-
-            $characters = $this->hooks->onGetUserList($request);
-
-            return new Response(200, [
-                'errcode' => 0,
-                'data' => array_map(
-                    static fn (UserCharacter $c): array => array_filter([
-                        'uid' => $c->uid,
-                        'characterName' => $c->characterName,
-                        'server' => $c->server,
-                    ], static fn (mixed $v): bool => $v !== null),
-                    $characters,
-                ),
-            ]);
-        });
-    }
-
-    /**
-     * The one route with no business hook behind it — wire it once and
+     * A fifth route with no business hook behind it — wire it once and
      * never touch it again. Alogame calls this (signed, same as every
      * other call) to confirm two things at once: your endpoint is
      * reachable, AND the secret Console has on file for you still matches

@@ -15,6 +15,7 @@ use Alogame\PaymentSdk\Exceptions\InvalidPayloadException;
 use Alogame\PaymentSdk\Exceptions\InvalidSignatureException;
 use Alogame\PaymentSdk\Http\Response;
 use Alogame\PaymentSdk\Expub\Signature\Md5SignatureVerifier;
+use Alogame\PaymentSdk\WebPay\Signature\HmacSignatureVerifier;
 
 /**
  * The one class an expub game backend wires into its own router — three
@@ -25,10 +26,21 @@ use Alogame\PaymentSdk\Expub\Signature\Md5SignatureVerifier;
  * to know it got a wire field name or a status code wrong until a real
  * player's order fails.
  *
- * This implements the OLDER of the two contracts this SDK ships — MD5,
- * `Signature` header, errors via HTTP status — used by exclusive/direct-
- * publishing (expub) games. New co-publishing games should use \Alogame\
- * PaymentSdk\WebPay\WebpayHandler instead; the two are not interchangeable.
+ * This implements the expub contract — used by exclusive/direct-publishing
+ * (expub) games; co-publishing games use \Alogame\PaymentSdk\WebPay\
+ * WebpayHandler instead. It answers whichever signature scheme the game
+ * picked in Console, detected per request from the headers Alogame sent —
+ * nothing to configure here, and nothing that can drift from Console:
+ *
+ *  - MD5 (every expub game integrated before HMAC): `Signature` header,
+ *    `timestamp` (seconds) as a body field, errors via HTTP status.
+ *  - HMAC-SHA256 (recommended for a new integration): `x-timestamp`
+ *    (milliseconds) + `x-signature` headers, exactly as WebpayHandler
+ *    verifies them, and every business outcome answered 200 with an
+ *    `{errcode, msg, data}` envelope — the only shape Alogame's HMAC
+ *    strategy parses (it treats any non-2xx as a transport failure). A
+ *    body `timestamp` is never sent under this scheme, which is why the MD5
+ *    verifier can't be used for it: every call would fail as expired.
  *
  * onCreateOrder/onPaymentReceived also serve this same game's Mobile IAP
  * purchases — `createOrder_url`/`exchange_url` are shared, distinguished
@@ -42,7 +54,10 @@ use Alogame\PaymentSdk\Expub\Signature\Md5SignatureVerifier;
  * Wire field names below are Alogame API's own defaults
  * (backend-api's GenericSignatureGameAdapter.js) verbatim — never rename
  * them here; renaming happens once, in the DTOs' property names, for the
- * hook implementer's benefit.
+ * hook implementer's benefit. createOrder/paymentReceived also accept the
+ * WebPay spellings (plat_order_num, productid, amount, server_id,
+ * order_num): under HMAC, web top-up (api-game) sends the expub names but
+ * Mobile IAP (backend-api) sends the WebPay ones, to the SAME two URLs.
  */
 final class ExpubHandler
 {
@@ -50,9 +65,17 @@ final class ExpubHandler
      * Bumped on any change to the wire contract this class implements (not
      * on internal refactors).
      */
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.1.0';
 
-    private readonly Md5SignatureVerifier $verifier;
+    private readonly Md5SignatureVerifier $md5Verifier;
+
+    private readonly HmacSignatureVerifier $hmacVerifier;
+
+    /**
+     * Set per request by dispatch() — which scheme the call in flight was
+     * signed with, and therefore which response shape it expects back.
+     */
+    private bool $hmac = false;
 
     /**
      * @param (\Closure(\Throwable): void)|null $onError Called with any
@@ -68,7 +91,8 @@ final class ExpubHandler
         int $timestampToleranceSeconds = 600,
         private readonly ?\Closure $onError = null,
     ) {
-        $this->verifier = new Md5SignatureVerifier($secret, $timestampToleranceSeconds);
+        $this->md5Verifier = new Md5SignatureVerifier($secret, $timestampToleranceSeconds);
+        $this->hmacVerifier = new HmacSignatureVerifier($secret, $timestampToleranceSeconds);
     }
 
     /**
@@ -82,18 +106,22 @@ final class ExpubHandler
                 extInfo: self::optionalString($payload, 'ext_info'),
             );
 
-            $characters = $this->hooks->onGetUserList($request);
+            $characters = array_map(
+                static fn (UserCharacter $c): array => array_filter([
+                    'uid' => $c->uid,
+                    'characterName' => $c->characterName,
+                    'server' => $c->server,
+                ], static fn (mixed $v): bool => $v !== null),
+                $this->hooks->onGetUserList($request),
+            );
+
+            if ($this->hmac) {
+                return self::envelope(0, 'success', $characters);
+            }
 
             return new Response(200, [
                 'userId' => $request->userId,
-                'uids' => array_map(
-                    static fn (UserCharacter $c): array => array_filter([
-                        'uid' => $c->uid,
-                        'characterName' => $c->characterName,
-                        'server' => $c->server,
-                    ], static fn (mixed $v): bool => $v !== null),
-                    $characters,
-                ),
+                'uids' => $characters,
             ]);
         });
     }
@@ -124,15 +152,21 @@ final class ExpubHandler
             $result = $this->hooks->onCheckUid($request);
 
             if (!$result->found) {
-                return new Response(404, [
-                    'error' => ['code' => 'UID_NOT_FOUND', 'message' => 'uid does not exist.'],
-                ]);
+                return $this->hmac
+                    ? self::envelope(1, 'uid not found')
+                    : new Response(404, [
+                        'error' => ['code' => 'UID_NOT_FOUND', 'message' => 'uid does not exist.'],
+                    ]);
             }
 
-            return new Response(200, array_filter([
+            $character = array_filter([
                 'characterName' => $result->characterName,
                 'server' => $result->server,
-            ], static fn (mixed $v): bool => $v !== null));
+            ], static fn (mixed $v): bool => $v !== null);
+
+            return $this->hmac
+                ? self::envelope(0, 'success', $character)
+                : new Response(200, $character);
         });
     }
 
@@ -143,16 +177,27 @@ final class ExpubHandler
     {
         return $this->dispatch($headers, $rawBody, function (array $payload): Response {
             $request = new CreateOrderRequest(
-                orderId: self::requireString($payload, 'order_id'),
+                orderId: self::requireString($payload, 'order_id', 'plat_order_num'),
                 uid: self::requireString($payload, 'uid'),
-                productId: self::requireString($payload, 'productId'),
-                amount: self::optionalInt($payload, 'price'),
-                serverId: self::optionalString($payload, 'serverId'),
+                productId: self::requireString($payload, 'productId', 'productid'),
+                amount: self::optionalInt($payload, 'price', 'amount'),
+                serverId: self::optionalString($payload, 'serverId', 'server_id'),
                 osId: self::optionalString($payload, 'os_id'),
                 extInfo: self::optionalString($payload, 'ext_info'),
             );
 
             $result = $this->hooks->onCreateOrder($request);
+
+            if ($this->hmac) {
+                // A duplicate is a success on this scheme: Alogame retried
+                // an order it already created, and needs the ORIGINAL
+                // order_num back — the same answer as the first call.
+                return match (true) {
+                    $result->productNotFound => self::envelope(1, 'product not found'),
+                    $result->uidNotFound => self::envelope(1, 'uid not found'),
+                    default => self::envelope(0, 'success', ['order_num' => $result->orderCode]),
+                };
+            }
 
             if ($result->productNotFound) {
                 return new Response(404, [
@@ -187,13 +232,21 @@ final class ExpubHandler
     {
         return $this->dispatch($headers, $rawBody, function (array $payload): Response {
             $request = new PaymentReceivedRequest(
-                orderCode: self::requireString($payload, 'order_code'),
-                orderId: self::optionalString($payload, 'order_id'),
-                amount: self::optionalInt($payload, 'price'),
+                orderCode: self::requireString($payload, 'order_code', 'order_num'),
+                orderId: self::optionalString($payload, 'order_id', 'plat_order_num'),
+                amount: self::optionalInt($payload, 'price', 'amount'),
                 extInfo: self::optionalString($payload, 'ext_info'),
             );
 
             $result = $this->hooks->onPaymentReceived($request);
+
+            if ($this->hmac) {
+                // Already delivered is errcode 0 too: anything else makes
+                // Alogame retry a delivery that already happened.
+                return $result->orderCodeNotFound
+                    ? self::envelope(1, 'order_code not found')
+                    : self::envelope(0, 'success');
+            }
 
             if ($result->orderCodeNotFound) {
                 return new Response(404, [
@@ -219,6 +272,27 @@ final class ExpubHandler
      */
     private function dispatch(array $headers, string $rawBody, callable $action): Response
     {
+        // Alogame's HMAC strategy always sends x-signature and its MD5 ones
+        // never do, so the header alone says which scheme — and which
+        // response shape — this call uses. Both are keyed by the same
+        // secret, so the choice gives a caller without it nothing.
+        // HMAC signs the raw bytes, so it's checked before parsing; MD5
+        // signs the decoded fields (plus the body `timestamp`), so after.
+        $this->hmac = self::header($headers, 'x-signature') !== null;
+        if ($this->hmac) {
+            try {
+                $this->hmacVerifier->verify(
+                    self::header($headers, 'x-timestamp'),
+                    self::header($headers, 'x-signature'),
+                    $rawBody,
+                );
+            } catch (InvalidSignatureException $e) {
+                return new Response(401, [
+                    'error' => ['code' => 'SIGNATURE_INVALID', 'message' => $e->getMessage()],
+                ]);
+            }
+        }
+
         try {
             $payload = json_decode($rawBody, associative: true, flags: JSON_THROW_ON_ERROR);
         } catch (\JsonException) {
@@ -233,12 +307,14 @@ final class ExpubHandler
             ]);
         }
 
-        try {
-            $this->verifier->verify($payload, self::header($headers, 'Signature'));
-        } catch (InvalidSignatureException $e) {
-            return new Response(401, [
-                'error' => ['code' => 'SIGNATURE_INVALID', 'message' => $e->getMessage()],
-            ]);
+        if (!$this->hmac) {
+            try {
+                $this->md5Verifier->verify($payload, self::header($headers, 'Signature'));
+            } catch (InvalidSignatureException $e) {
+                return new Response(401, [
+                    'error' => ['code' => 'SIGNATURE_INVALID', 'message' => $e->getMessage()],
+                ]);
+            }
         }
 
         try {
@@ -262,11 +338,44 @@ final class ExpubHandler
     }
 
     /**
+     * The `{errcode, msg, data}` envelope every HMAC-scheme answer uses —
+     * always HTTP 200, the outcome lives in `errcode`.
+     *
+     * @param array<mixed>|null $data
+     */
+    private static function envelope(int $errcode, string $msg, ?array $data = null): Response
+    {
+        $body = ['errcode' => $errcode, 'msg' => $msg];
+        if ($data !== null) {
+            $body['data'] = $data;
+        }
+
+        return new Response(200, $body);
+    }
+
+    /**
+     * First of $keys present in $payload — the expub spelling first, then
+     * its WebPay alias (see the class docblock for why both arrive).
+     *
      * @param array<string, mixed> $payload
      */
-    private static function requireString(array $payload, string $key): string
+    private static function pick(array $payload, string ...$keys): mixed
     {
-        $value = $payload[$key] ?? null;
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $payload)) {
+                return $payload[$key];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function requireString(array $payload, string $key, string ...$aliases): string
+    {
+        $value = self::pick($payload, $key, ...$aliases);
         if (!is_string($value) || $value === '') {
             throw new InvalidPayloadException("Parameter [$key] is missing.");
         }
@@ -277,9 +386,9 @@ final class ExpubHandler
     /**
      * @param array<string, mixed> $payload
      */
-    private static function optionalString(array $payload, string $key): ?string
+    private static function optionalString(array $payload, string $key, string ...$aliases): ?string
     {
-        $value = $payload[$key] ?? null;
+        $value = self::pick($payload, $key, ...$aliases);
 
         return is_string($value) && $value !== '' ? $value : null;
     }
@@ -287,9 +396,9 @@ final class ExpubHandler
     /**
      * @param array<string, mixed> $payload
      */
-    private static function optionalInt(array $payload, string $key): ?int
+    private static function optionalInt(array $payload, string $key, string ...$aliases): ?int
     {
-        $value = $payload[$key] ?? null;
+        $value = self::pick($payload, $key, ...$aliases);
         if ($value === null || $value === '') {
             return null;
         }

@@ -243,42 +243,6 @@ then arrives on the **same** `onCreateOrder` call as everything else, as
 the uid alone resolves to. It is `null` for every game without this
 interface, so an existing integration sees no change.
 
-## Optional: characters linked to the player's Alogame account
-
-Implement this if your players **log into their Alogame account** and your
-backend links their characters to that account — Alogame then lists those
-characters itself instead of asking the player to type a uid. This is the
-HMAC equivalent of Expub's `onGetUserList` below: if you already serve IAP or
-webpay through `WebpayHandler`, use this one, not `ExpubHandler` — the
-latter verifies MD5 with a body `timestamp`, which Alogame never sends to a
-game configured for HMAC (every such request fails as `timestamp` missing).
-
-```php
-use Alogame\PaymentSdk\WebPay\Contracts\UserListHookInterface;
-use Alogame\PaymentSdk\WebPay\Dto\{GetUserListRequest, UserCharacter};
-
-final class MyGameHooks implements WebpayHookInterface, UserListHookInterface
-{
-    // ...onCheckUid/onCreateOrder/onPaymentReceived as above...
-
-    public function onGetUserList(GetUserListRequest $request): array
-    {
-        return array_map(
-            static fn ($c) => new UserCharacter($c->uid, $c->name, $c->serverName),
-            MyCharacterRepository::linkedToAlogameUser($request->userId),
-        );
-    }
-}
-```
-
-`$request->userId` is the Alogame account's **numeric id** — the `userId`
-the Alogame client SDK returns at login, not its uuid. Returning `[]` means
-"no linked character" and shows an empty list rather than an error.
-
-Wire a route to `WebpayHandler::handleGetUserList()`. Response on success:
-`{"errcode":0,"data":[{"uid":"...","characterName":"...","server":"..."}]}`
-(`server` is omitted when you pass `null`).
-
 ## Health check — "is my SDK actually listening?"
 
 Wire the last route to `WebpayHandler::handleHealthCheck()`. Alogame calls
@@ -298,13 +262,23 @@ without asking you to paste your `composer.lock`.
 
 ## Expub (Exclusive/Direct-Publishing games)
 
-For **expub games only** — co-pub games use `WebPay` above instead. This is
-the older of the two contracts (MD5, `Signature` header, errors reported via
-HTTP status rather than an `errcode` field), matching the algorithm every
-expub/legacy game provider already signs with on Alogame's side
-(`backend-api`'s `md5_timestamp` strategy). It covers **both** an expub
-game's web top-up flow and its Mobile IAP purchases — the two channels share
-`createOrder_url`/`exchange_url` entirely.
+For **expub games only** — co-pub games use `WebPay` above instead. It
+covers **both** an expub game's web top-up flow and its Mobile IAP
+purchases — the two channels share `createOrder_url`/`exchange_url`
+entirely.
+
+It answers whichever signature strategy your game uses in Console, detected
+per request — there is nothing to configure in code:
+
+| Strategy in Console | What Alogame sends | What `ExpubHandler` answers |
+|---|---|---|
+| MD5 (existing expub titles) | `Signature` header, `timestamp` (seconds) in the body | HTTP status per outcome (`201`, `404`, `409`, …) |
+| HMAC-SHA256 (recommended for a new integration) | `x-timestamp` (milliseconds) + `x-signature` headers | Always `200` with `{errcode, msg, data}` — a duplicate order and an already-processed payment are `errcode 0` |
+
+Under HMAC, web top-up and Mobile IAP spell some `createOrder`/
+`paymentReceived` fields differently (`order_id` vs `plat_order_num`,
+`productId` vs `productid`, …); the handler accepts both, so your hooks see
+the same DTO either way.
 
 Implement the one interface:
 

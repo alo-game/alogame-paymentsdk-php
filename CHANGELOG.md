@@ -6,30 +6,38 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
-## [2.2.0] - 2026-09-29
+## [2.3.0] - 2026-09-29
 
 ### Added
 
-- `WebPay\Contracts\UserListHookInterface` +
-  `WebpayHandler::handleGetUserList()` — the HMAC counterpart of Expub's
-  `onGetUserList`, for a game whose players log into their Alogame account
-  and have characters linked to it. Until now `ExpubHandler` was the only
-  handler with this route, and its MD5 verifier requires a body
-  `timestamp` that Alogame never sends to a game configured for HMAC — so
-  an HMAC game's get_user_list failed with `401 SIGNATURE_INVALID`
-  ("timestamp" missing/expired) while its IAP routes worked. Verified with
-  the same `x-timestamp`/`x-signature` headers as every other WebPay route;
-  answers `{"errcode":0,"data":[{"uid","characterName","server"}]}`. Opt-in
-  like the server/character lists: a game without the interface answers
-  `404 NOT_CONFIGURED`.
-- `WebPay\Dto\GetUserListRequest` (`$userId` — the Alogame account's
-  numeric id, the `userId` the client SDK returns at login, not its uuid)
-  and `WebPay\Dto\UserCharacter`.
+- `ExpubHandler` now also serves an expub game signing with **HMAC-SHA256**
+  (the algorithm recommended for a new integration), detected per request
+  from the headers Alogame sent — no new constructor argument, nothing to
+  keep in sync with the strategy picked in Console. Until now it verified
+  MD5 only, which reads a body `timestamp` that Alogame's HMAC strategy
+  never sends (it uses the `x-timestamp` header), so every call from an
+  HMAC expub game failed with `401 SIGNATURE_INVALID` "timestamp expired".
+  On an HMAC call the handler:
+  - verifies `x-timestamp` (milliseconds) + `x-signature` exactly as
+    `WebpayHandler` does;
+  - answers every business outcome `200` with an `{errcode, msg, data}`
+    envelope — the only shape Alogame's HMAC strategy parses — e.g.
+    `onGetUserList` → `{"errcode":0,"data":[{"uid","characterName","server"}]}`,
+    `onCreateOrder` → `{"errcode":0,"data":{"order_num":"..."}}`. A
+    duplicate order and an already-processed payment are `errcode 0`
+    (never a 409, which that strategy treats as a transport failure);
+  - accepts both field spellings on `createOrder`/`paymentReceived`: web
+    top-up (api-game) sends the expub names (`order_id`, `productId`,
+    `price`, `serverId`, `order_code`), Mobile IAP (backend-api) sends the
+    WebPay ones (`plat_order_num`, `productid`, `amount`, `server_id`,
+    `order_num`) to the same two URLs.
+
+  MD5 calls are unchanged: same verifier, same HTTP-status responses.
 
 ### Changed
 
-- `WebpayHandler::VERSION` 1.1.0 -> 1.2.0 — the WebPay wire contract gained
-  an endpoint (additive).
+- `ExpubHandler::VERSION` 1.0.0 -> 1.1.0 — the Expub wire contract gained
+  the HMAC variant (additive).
 
 ## [2.1.0] - 2026-09-10
 
