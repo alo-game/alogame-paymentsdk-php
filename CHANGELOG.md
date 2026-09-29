@@ -6,6 +6,31 @@ All notable changes to this package are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-29
+
+### Added
+
+- `WebPay\Contracts\UserListHookInterface` +
+  `WebpayHandler::handleGetUserList()` — the HMAC counterpart of Expub's
+  `onGetUserList`, for a game whose players log into their Alogame account
+  and have characters linked to it. Until now `ExpubHandler` was the only
+  handler with this route, and its MD5 verifier requires a body
+  `timestamp` that Alogame never sends to a game configured for HMAC — so
+  an HMAC game's get_user_list failed with `401 SIGNATURE_INVALID`
+  ("timestamp" missing/expired) while its IAP routes worked. Verified with
+  the same `x-timestamp`/`x-signature` headers as every other WebPay route;
+  answers `{"errcode":0,"data":[{"uid","characterName","server"}]}`. Opt-in
+  like the server/character lists: a game without the interface answers
+  `404 NOT_CONFIGURED`.
+- `WebPay\Dto\GetUserListRequest` (`$userId` — the Alogame account's
+  numeric id, the `userId` the client SDK returns at login, not its uuid)
+  and `WebPay\Dto\UserCharacter`.
+
+### Changed
+
+- `WebpayHandler::VERSION` 1.1.0 -> 1.2.0 — the WebPay wire contract gained
+  an endpoint (additive).
+
 ## [2.1.0] - 2026-09-10
 
 ### Added
